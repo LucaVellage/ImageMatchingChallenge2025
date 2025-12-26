@@ -1,0 +1,25 @@
+data_root: ./data/train
+sfm_root: ./cache/sfm
+
+colmap_bin: colmap
+camera_model: SIMPLE_RADIAL
+single_camera: true
+
+use_gpu: false
+max_image_size: 2000
+num_threads: 4
+max_num_features: 4096
+first_octave: 0
+
+sift_matching_num_threads: 4
+
+min_num_matches: 8
+init_num_trials: 50
+max_reg_trials: 2
+ba_global_max_num_iterations: 5
+ba_global_max_refinements: 1
+
+timeout_default: 900
+timeout_mapper: 3600
+
+reset_scene_dir: true
