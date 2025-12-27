@@ -2,10 +2,11 @@ import shutil
 from pathlib import Path
 
 from .prep import prepare_cluster_workspace
+from .sfm_matching import write_pairs_from_knn
 from .colmap_runner import (
     get_headless_env,
     colmap_feature_extractor,
-    colmap_exhaustive_matcher,
+    colmap_matches_importer,
     colmap_mapper,
 )
 
@@ -32,7 +33,18 @@ def reconstruct_scene(dataset, scene, image_ids, cfg, pbar=None):
     colmap_feature_extractor(db_path, img_dir, cfg, env)
     if pbar: pbar.update(1)
 
-    colmap_exhaustive_matcher(db_path, cfg, env)
+    write_pairs_from_knn(
+        pair_npz=scene_dir / "pair_topk_K30.npz",
+        image_names=[img.name for img in sorted(img_dir.iterdir())],
+        out_pairs_txt=scene_dir / "pairs.txt",
+    )
+
+    colmap_matches_importer(
+        db_path=db_path,
+        pairs_txt=scene_dir / "pairs.txt",
+        cfg=cfg,
+        env=env,
+    )
     if pbar: pbar.update(1)
 
     print("Images in scene:", len(list(img_dir.iterdir())))

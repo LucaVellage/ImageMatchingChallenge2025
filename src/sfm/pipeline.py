@@ -8,7 +8,7 @@ from .poses import save_scene_outputs
 SCENE_STEPS = [
     "prepare_images",
     "feature_extraction",
-    "matching",
+    "pair_import",
     "mapping",
     "pose_extraction",
 ]
