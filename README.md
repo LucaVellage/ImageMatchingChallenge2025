@@ -11,7 +11,7 @@ See `PIPELINE.md` for a step-by-step end-to-end guide (training â†’ clustering â
 ## Notebooks
 Curated and exploratory notebooks live in `notebooks/`.
 
-## Demo: Pose Explorer (wow-factor visualization)
+## Demo: Pose Explorer
 Interactive 3D viewer for `submission.csv` (camera centers + optional pointcloud overlay).
 
 - Run a local web app:
