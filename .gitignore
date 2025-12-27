@@ -34,8 +34,7 @@ Thumbs.db
 
 # Data + generated artifacts
 data/
-cache*/
-outputs*/
-logs/
-scripts/outputs/
 submission*.csv
+/outputs/retrieval_finetune
+/outputs/retrieval_finetune_base
+/outputs

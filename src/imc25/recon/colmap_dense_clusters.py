@@ -199,12 +199,22 @@ def _db_image_name_set(db_path: Path) -> set[str] | None:
 
 def _ply_vertex_count(path: Path) -> int | None:
     try:
+        max_header_bytes = 1024 * 1024  # 1 MiB safety cap
+        chunk_size = 64 * 1024
+        buf = bytearray()
         with path.open("rb") as f:
-            header = f.read(4096)
-        if b"end_header" not in header:
+            while True:
+                chunk = f.read(chunk_size)
+                if not chunk:
+                    break
+                buf.extend(chunk)
+                if b"end_header" in buf:
+                    break
+                if len(buf) > max_header_bytes:
+                    return None
+        if b"end_header" not in buf:
             return None
-        lines = header.splitlines()
-        for line in lines:
+        for line in bytes(buf).splitlines():
             if line.startswith(b"element vertex "):
                 return int(line.split()[-1])
         return None
@@ -329,6 +339,40 @@ class ColmapRunner:
             return
         subprocess.run(cmd, cwd=self.repo_root, check=True)
 
+    def rm_f(self, path: Path, *, dry_run: bool = False) -> None:
+        if not path.exists():
+            return
+
+        try:
+            path.unlink()
+            return
+        except Exception:
+            pass
+
+        if shutil.which("docker") is None:
+            raise
+
+        rel = self._rel(path)
+        if rel in {"", "."}:
+            raise ValueError(f"Refusing to remove unsafe path: {path}")
+        cmd = [
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            f"{self.repo_root}:/workspace",
+            "-w",
+            "/workspace",
+            self.docker_image,
+            "sh",
+            "-lc",
+            f"rm -f {shlex.quote(rel)}",
+        ]
+        print("+", " ".join(cmd), flush=True)
+        if dry_run:
+            return
+        subprocess.run(cmd, cwd=self.repo_root, check=True)
+
 
 def _auto_runner_mode(prefer: str) -> str:
     if prefer in {"local", "docker"}:
@@ -394,8 +438,12 @@ def run_dense_for_cluster(
     patchmatch_gpu_index: int | None,
     matcher: str,
     image_mode: str,
+    dino_args: dict | None,
     diffusion_args: dict | None,
     dense_min_vertices: int,
+    depth_fallback: bool,
+    depth_args: dict | None,
+    sparse_only: bool,
     mapper_min_model_size: int,
     mapper_min_num_matches: int | None,
     mapper_init_min_num_inliers: int,
@@ -405,6 +453,13 @@ def run_dense_for_cluster(
     mapper_local_ba_min_tri_angle: float,
     mapper_tri_ignore_two_view_tracks: int,
     mapper_disable_local_ba_min_tri_angle: bool,
+    patchmatch_min_tri_angle: float | None,
+    patchmatch_filter_min_tri_angle: float | None,
+    patchmatch_filter_min_ncc: float | None,
+    patchmatch_relax_on_failure: bool,
+    patchmatch_relaxed_min_tri_angle: float | None,
+    patchmatch_relaxed_filter_min_tri_angle: float | None,
+    patchmatch_relaxed_filter_min_ncc: float | None,
 ) -> str:
     out_dir = job.out_dir
     images_dir = out_dir / "images"
@@ -412,9 +467,22 @@ def run_dense_for_cluster(
     dense_root = out_dir / "dense"
     dense_ply = out_dir / "dense_points.ply"
 
-    if dense_ply.exists() and not overwrite:
-        print(f"[skip] {job.dataset}/{job.scene}: {dense_ply} exists")
-        return "skip"
+    if sparse_only:
+        best = _pick_best_sparse_model(sparse_root)
+        if best is not None and (best / "images.bin").exists() and not overwrite:
+            print(f"[skip] {job.dataset}/{job.scene}: sparse model exists at {best}")
+            return "skip"
+    else:
+        if dense_ply.exists() and not overwrite:
+            vtx_existing = _ply_vertex_count(dense_ply)
+            if vtx_existing is not None and vtx_existing < int(dense_min_vertices):
+                print(
+                    f"[warn] {job.dataset}/{job.scene}: existing {dense_ply} has {vtx_existing} points (<{dense_min_vertices}); rebuilding",
+                    flush=True,
+                )
+            else:
+                print(f"[skip] {job.dataset}/{job.scene}: {dense_ply} exists")
+                return "skip"
     if overwrite and out_dir.exists() and not dry_run:
         runner.rm_rf(out_dir)
 
@@ -469,10 +537,15 @@ def run_dense_for_cluster(
     def p(path: Path) -> str:
         return runner._rel(path) if runner.mode == "docker" else str(path)
 
-    matcher_sequence = ["colmap", "diffusion"] if matcher == "auto" else [matcher]
+    matcher_sequence = ["colmap", "dino", "diffusion"] if matcher == "auto" else [matcher]
     last_status: str = "fail"
     for seq_idx, matcher_try in enumerate(matcher_sequence):
-        db_path = out_dir / ("colmap_diffusion.db" if matcher_try == "diffusion" else "colmap.db")
+        if matcher_try == "diffusion":
+            db_path = out_dir / "colmap_diffusion.db"
+        elif matcher_try == "dino":
+            db_path = out_dir / "colmap_dino.db"
+        else:
+            db_path = out_dir / "colmap.db"
         if seq_idx > 0:
             print(f"[fallback] {job.dataset}/{job.scene}: trying matcher={matcher_try}", flush=True)
 
@@ -506,6 +579,8 @@ def run_dense_for_cluster(
             print(f"[dry-run] {job.dataset}/{job.scene} -> {out_dir}")
             if matcher_try == "diffusion":
                 print("  [python] build colmap.db via diffusion features + RANSAC inliers")
+            elif matcher_try == "dino":
+                print("  [python] build colmap.db via DINOv2 patch descriptors + RANSAC inliers")
             else:
                 print("  colmap", " ".join(feature_args))
                 print("  colmap", " ".join(match_args))
@@ -573,7 +648,87 @@ def run_dense_for_cluster(
                 else:
                     has_features, has_pair_geom = _db_ready(db_path)
 
-        if matcher_try == "diffusion":
+        if matcher_try == "dino":
+            if (not db_path.exists()) or (not has_features) or (not has_pair_geom):
+                if db_path.exists():
+                    db_path.unlink(missing_ok=True)
+                if dino_args is None:
+                    raise RuntimeError("dino_args missing (internal error)")
+
+                from imc25.matching.dino_features import DinoFeatureConfig, DinoPatchFeatureExtractor
+                from imc25.matching.dino_matcher import KeypointConfig, MatchConfig
+                from imc25.matching.dino_to_colmap import PairingConfig, build_colmap_db_from_dino
+
+                feat_cfg = dino_args.get("feat_cfg")
+                kp_cfg = dino_args.get("kp_cfg")
+                match_cfg = dino_args.get("match_cfg")
+                pairing_cfg = dino_args.get("pairing_cfg")
+                extractor = dino_args.get("extractor")
+
+                if feat_cfg is None:
+                    feat_cfg = DinoFeatureConfig(
+                        model_id=str(dino_args["model_id"]),
+                        max_side=int(dino_args["max_side"]),
+                        layer=int(dino_args["layer"]) if dino_args.get("layer") is not None else None,
+                        use_fp16=bool(dino_args["fp16"]),
+                    )
+                    dino_args["feat_cfg"] = feat_cfg
+                if kp_cfg is None:
+                    kp_cfg = KeypointConfig(method=str(dino_args["keypoints"]), max_keypoints=int(dino_args["max_keypoints"]))
+                    dino_args["kp_cfg"] = kp_cfg
+                if match_cfg is None:
+                    match_cfg = MatchConfig(
+                        min_similarity=float(dino_args["min_similarity"]),
+                        max_matches=int(dino_args["max_matches"]),
+                        ransac_thresh_px=float(dino_args["ransac_thresh_px"]),
+                        min_inliers=int(dino_args["min_inliers"]),
+                    )
+                    dino_args["match_cfg"] = match_cfg
+                if pairing_cfg is None:
+                    pairing_cfg = PairingConfig(mode=str(dino_args["pairing"]), topk=int(dino_args["topk"]))
+                    dino_args["pairing_cfg"] = pairing_cfg
+                if extractor is None:
+                    if dino_args.get("hf_endpoint"):
+                        os.environ["HF_ENDPOINT"] = str(dino_args["hf_endpoint"])
+                    print("[dino] lazy loading model...", flush=True)
+                    extractor = DinoPatchFeatureExtractor(
+                        feat_cfg,
+                        device=str(dino_args.get("device")) if dino_args.get("device") else None,
+                        hf_endpoint=str(dino_args.get("hf_endpoint")) if dino_args.get("hf_endpoint") else None,
+                    )
+                    dino_args["extractor"] = extractor
+
+                cache_dir = dino_args.get("cache_dir")
+                cache_dir = Path(cache_dir) if cache_dir else None
+
+                build_colmap_db_from_dino(
+                    images_dir=images_dir,
+                    db_path=db_path,
+                    overwrite=True,
+                    camera_model=camera_model,
+                    single_camera=single_camera,
+                    feat_cfg=feat_cfg,
+                    kp_cfg=kp_cfg,
+                    match_cfg=match_cfg,
+                    pairing_cfg=pairing_cfg,
+                    cache_dir=cache_dir,
+                    dino_device=str(dino_args.get("device")) if dino_args.get("device") else None,
+                    hf_endpoint=str(dino_args.get("hf_endpoint")) if dino_args.get("hf_endpoint") else None,
+                    extractor=extractor,
+                    verbose=True,
+                )
+
+            has_features, has_pair_geom = _db_ready(db_path) if db_path.exists() else (False, False)
+            if not has_pair_geom:
+                print(
+                    f"[skip] {job.dataset}/{job.scene}: DINO matching produced no verified pairs "
+                    f"(try --dino-min-inliers 8 or --dino-min-similarity 0.7)",
+                    flush=True,
+                )
+                last_status = "fail"
+                continue
+
+        elif matcher_try == "diffusion":
             if (not db_path.exists()) or (not has_features) or (not has_pair_geom):
                 if db_path.exists():
                     db_path.unlink(missing_ok=True)
@@ -682,7 +837,8 @@ def run_dense_for_cluster(
             ),
             (2, 15, 1.0, 0.25, 0.25, 0.25, 0),
             (2, 8, 0.5, 0.05, 0.05, 0.05, 0),
-            (2, 4, 0.1, 0.0, 0.0, 0.0, 0),
+            # Some COLMAP builds require triangulation angles to be strictly > 0.
+            (2, 4, 0.1, 0.01, 0.01, 0.01, 0),
         ]
         mapper_ok = False
         for i, (
@@ -733,6 +889,35 @@ def run_dense_for_cluster(
 
         if not mapper_ok:
             print(f"[fail] {job.dataset}/{job.scene}: COLMAP mapper failed after {len(mapper_profiles)} attempts")
+            if (not sparse_only) and depth_fallback and depth_args is not None and not dry_run:
+                try:
+                    from imc25.recon.depth_fusion import build_dense_points_from_depth
+
+                    if dense_ply.exists():
+                        runner.rm_f(dense_ply, dry_run=dry_run)
+                    pts = build_dense_points_from_depth(
+                        images_dir=images_dir,
+                        out_ply=dense_ply,
+                        model_dir=None,
+                        depth_model_id=str(depth_args["model_id"]),
+                        hf_endpoint=str(depth_args.get("hf_endpoint")) if depth_args.get("hf_endpoint") else None,
+                        device=str(depth_args.get("device")) if depth_args.get("device") else None,
+                        fp16=bool(depth_args.get("fp16", True)),
+                        stride=int(depth_args.get("stride", 3)),
+                        max_points=int(depth_args.get("max_points", 200_000)),
+                        align_scale=bool(depth_args.get("align_scale", False)),
+                        with_color=bool(depth_args.get("with_color", True)),
+                        verbose=True,
+                    )
+                    if pts >= int(dense_min_vertices):
+                        print(
+                            f"[ok] {job.dataset}/{job.scene}: wrote {dense_ply} via depth fallback (points={pts}) "
+                            "(SfM failed; poses will be NaN)",
+                            flush=True,
+                        )
+                        return "ok"
+                except Exception as e:
+                    print(f"[warn] {job.dataset}/{job.scene}: depth fallback failed after SfM failure: {e}", flush=True)
             last_status = "fail"
             continue
 
@@ -741,6 +926,10 @@ def run_dense_for_cluster(
             print(f"[fail] {job.dataset}/{job.scene}: no sparse model produced at {sparse_root}")
             last_status = "fail"
             continue
+
+        if sparse_only:
+            print(f"[ok] {job.dataset}/{job.scene}: sparse model ready at {best_model}", flush=True)
+            return "ok"
 
         undistort_args = [
             "image_undistorter",
@@ -768,6 +957,12 @@ def run_dense_for_cluster(
         ]
         if patchmatch_gpu_index is not None:
             patchmatch_args += ["--PatchMatchStereo.gpu_index", str(patchmatch_gpu_index)]
+        if patchmatch_min_tri_angle is not None:
+            patchmatch_args += ["--PatchMatchStereo.min_triangulation_angle", str(float(patchmatch_min_tri_angle))]
+        if patchmatch_filter_min_tri_angle is not None:
+            patchmatch_args += ["--PatchMatchStereo.filter_min_triangulation_angle", str(float(patchmatch_filter_min_tri_angle))]
+        if patchmatch_filter_min_ncc is not None:
+            patchmatch_args += ["--PatchMatchStereo.filter_min_ncc", str(float(patchmatch_filter_min_ncc))]
         runner.run(patchmatch_args)
 
         fusion_geometric = [
@@ -805,8 +1000,92 @@ def run_dense_for_cluster(
             print(f"[ok] {job.dataset}/{job.scene}: wrote {dense_ply} (points={pts})")
             return "ok"
 
+        if patchmatch_relax_on_failure:
+            print(
+                f"[warn] {job.dataset}/{job.scene}: dense fusion still has {vtx if vtx is not None else '?'} points; "
+                "retrying PatchMatch with relaxed thresholds",
+                flush=True,
+            )
+            if not dry_run:
+                # Keep configs but remove outputs to ensure a clean retry.
+                for sub in ["depth_maps", "normal_maps", "consistency_graphs"]:
+                    runner.rm_rf(dense_root / "stereo" / sub, dry_run=dry_run)
+
+            retry_args = [
+                "patch_match_stereo",
+                "--workspace_path",
+                p(dense_root),
+                "--workspace_format",
+                "COLMAP",
+                "--PatchMatchStereo.geom_consistency",
+                "true",
+            ]
+            if patchmatch_gpu_index is not None:
+                retry_args += ["--PatchMatchStereo.gpu_index", str(patchmatch_gpu_index)]
+            if patchmatch_relaxed_min_tri_angle is not None:
+                retry_args += ["--PatchMatchStereo.min_triangulation_angle", str(float(patchmatch_relaxed_min_tri_angle))]
+            if patchmatch_relaxed_filter_min_tri_angle is not None:
+                retry_args += [
+                    "--PatchMatchStereo.filter_min_triangulation_angle",
+                    str(float(patchmatch_relaxed_filter_min_tri_angle)),
+                ]
+            if patchmatch_relaxed_filter_min_ncc is not None:
+                retry_args += ["--PatchMatchStereo.filter_min_ncc", str(float(patchmatch_relaxed_filter_min_ncc))]
+            runner.run(retry_args)
+
+            runner.run(fusion_geometric)
+            vtx = _ply_vertex_count(dense_ply) if dense_ply.exists() else None
+            if vtx is not None and vtx < int(dense_min_vertices):
+                print(
+                    f"[warn] {job.dataset}/{job.scene}: relaxed geometric fusion has {vtx} points; trying photometric fusion",
+                    flush=True,
+                )
+                runner.run(fusion_photometric)
+                vtx = _ply_vertex_count(dense_ply) if dense_ply.exists() else vtx
+
+            if dense_ply.exists() and (vtx is None or vtx >= int(dense_min_vertices)):
+                pts = f"{vtx}" if vtx is not None else "?"
+                print(f"[ok] {job.dataset}/{job.scene}: wrote {dense_ply} (points={pts})")
+                return "ok"
+
         vtx_msg = f"{vtx}" if vtx is not None else "?"
         print(f"[fail] {job.dataset}/{job.scene}: dense fusion produced too few points (points={vtx_msg})", flush=True)
+
+        if depth_fallback and depth_args is not None and not dry_run:
+            try:
+                from imc25.recon.depth_fusion import build_dense_points_from_depth
+
+                # Prefer undistorted workspace images + reconstruction for consistent intrinsics/poses.
+                depth_images = dense_root / "images"
+                depth_model_dir = dense_root / "sparse"
+                use_images = depth_images if depth_images.exists() else images_dir
+                use_model = depth_model_dir if depth_model_dir.exists() else None
+
+                if dense_ply.exists():
+                    runner.rm_f(dense_ply, dry_run=dry_run)
+
+                pts = build_dense_points_from_depth(
+                    images_dir=use_images,
+                    out_ply=dense_ply,
+                    model_dir=use_model,
+                    depth_model_id=str(depth_args["model_id"]),
+                    hf_endpoint=str(depth_args.get("hf_endpoint")) if depth_args.get("hf_endpoint") else None,
+                    device=str(depth_args.get("device")) if depth_args.get("device") else None,
+                    fp16=bool(depth_args.get("fp16", True)),
+                    stride=int(depth_args.get("stride", 3)),
+                    max_points=int(depth_args.get("max_points", 200_000)),
+                    align_scale=bool(depth_args.get("align_scale", True)),
+                    with_color=bool(depth_args.get("with_color", True)),
+                    verbose=True,
+                )
+                if pts >= int(dense_min_vertices):
+                    print(f"[ok] {job.dataset}/{job.scene}: wrote {dense_ply} via depth fallback (points={pts})", flush=True)
+                    return "ok"
+            except Exception as e:
+                print(f"[warn] {job.dataset}/{job.scene}: depth fallback failed: {e}", flush=True)
+
+        if dense_ply.exists() and not dry_run:
+            runner.rm_f(dense_ply, dry_run=dry_run)
         last_status = "fail"
         continue
 
@@ -846,10 +1125,42 @@ def main() -> None:
     )
     parser.add_argument("--patchmatch-gpu-index", type=int, default=0)
     parser.add_argument(
+        "--patchmatch-min-tri-angle",
+        type=float,
+        default=0.5,
+        help="COLMAP PatchMatch: minimum triangulation angle (degrees). Lower for tiny parallax scenes.",
+    )
+    parser.add_argument(
+        "--patchmatch-filter-min-tri-angle",
+        type=float,
+        default=0.5,
+        help="COLMAP PatchMatch: filter minimum triangulation angle (degrees). Lower for tiny parallax scenes.",
+    )
+    parser.add_argument(
+        "--patchmatch-filter-min-ncc",
+        type=float,
+        default=0.1,
+        help="COLMAP PatchMatch: filter minimum NCC. Lower to keep more points (may add noise).",
+    )
+    parser.add_argument(
+        "--patchmatch-relax-on-failure",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="If fusion has too few points, rerun PatchMatch with even more permissive thresholds.",
+    )
+    parser.add_argument("--patchmatch-relaxed-min-tri-angle", type=float, default=0.1)
+    parser.add_argument("--patchmatch-relaxed-filter-min-tri-angle", type=float, default=0.1)
+    parser.add_argument("--patchmatch-relaxed-filter-min-ncc", type=float, default=0.05)
+    parser.add_argument(
         "--image-mode",
         default="auto",
         choices=["auto", "symlink", "copy"],
         help="How to place images into outputs/<dataset>_<scene>/images (auto copies for matcher=colmap to avoid symlink issues)",
+    )
+    parser.add_argument(
+        "--sparse-only",
+        action="store_true",
+        help="Stop after SfM (COLMAP mapper) and skip dense MVS (faster; useful for submission generation).",
     )
     parser.add_argument(
         "--mapper-min-model-size",
@@ -908,8 +1219,8 @@ def main() -> None:
     parser.add_argument(
         "--matcher",
         default="colmap",
-        choices=["colmap", "diffusion", "auto"],
-        help="How to populate colmap.db (colmap=SIFT, diffusion=diffusion features + RANSAC inliers, auto=try colmap then diffusion)",
+        choices=["colmap", "dino", "diffusion", "auto"],
+        help="How to populate colmap.db (colmap=SIFT, dino=DINOv2 patch descriptors + RANSAC, diffusion=diffusion features + RANSAC, auto=try colmap then dino then diffusion)",
     )
     parser.add_argument(
         "--dense-min-vertices",
@@ -935,6 +1246,37 @@ def main() -> None:
     parser.add_argument("--diffusion-min-inliers", type=int, default=15)
     parser.add_argument("--diffusion-pairing", choices=["auto", "exhaustive", "topk"], default="auto")
     parser.add_argument("--diffusion-topk", type=int, default=10)
+
+    parser.add_argument("--dino-cache-dir", type=Path, default=Path("cache/dino_features"))
+    parser.add_argument("--dino-model-id", default="facebook/dinov2-small")
+    parser.add_argument("--dino-max-side", type=int, default=512)
+    parser.add_argument("--dino-layer", type=int, default=None, help="Use hidden_states[layer] instead of last_hidden_state")
+    parser.add_argument("--dino-fp16", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--dino-device", default=None, help="Override DINO device (e.g. cuda, cuda:0, cpu)")
+    parser.add_argument("--dino-hf-endpoint", default=None, help="Hugging Face Hub endpoint (mirror), e.g. https://hf-mirror.com")
+    parser.add_argument("--dino-keypoints", choices=["patch", "gftt"], default="patch")
+    parser.add_argument("--dino-max-keypoints", type=int, default=2048)
+    parser.add_argument("--dino-min-similarity", type=float, default=0.75)
+    parser.add_argument("--dino-max-matches", type=int, default=4096)
+    parser.add_argument("--dino-ransac-thresh-px", type=float, default=1.5)
+    parser.add_argument("--dino-min-inliers", type=int, default=15)
+    parser.add_argument("--dino-pairing", choices=["auto", "exhaustive", "topk"], default="auto")
+    parser.add_argument("--dino-topk", type=int, default=10)
+
+    parser.add_argument(
+        "--depth-fallback",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="If dense fusion is empty/tiny, generate a dense pointcloud via monocular depth estimation.",
+    )
+    parser.add_argument("--depth-model-id", default="Intel/dpt-hybrid-midas", help="Depth model on Hugging Face Hub")
+    parser.add_argument("--depth-hf-endpoint", default=None, help="Hugging Face Hub endpoint (mirror), e.g. https://hf-mirror.com")
+    parser.add_argument("--depth-device", default=None, help="Override depth device (e.g. cuda, cuda:0, cpu)")
+    parser.add_argument("--depth-fp16", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--depth-align-scale", action=argparse.BooleanOptionalAction, default=True, help="Align depth scale to SfM sparse points when available")
+    parser.add_argument("--depth-with-color", action=argparse.BooleanOptionalAction, default=True, help="Store RGB colors in the PLY")
+    parser.add_argument("--depth-stride", type=int, default=3, help="Pixel stride when backprojecting depth (lower = denser, slower)")
+    parser.add_argument("--depth-max-points", type=int, default=200_000, help="Max points written to dense_points.ply (random subsample)")
     args = parser.parse_args()
 
     repo_root = Path.cwd().resolve()
@@ -959,6 +1301,21 @@ def main() -> None:
     camera_model = str(args.camera_model)
     single_camera = bool(args.single_camera)
     patchmatch_gpu_index = int(args.patchmatch_gpu_index) if args.patchmatch_gpu_index is not None else None
+    patchmatch_min_tri_angle = float(args.patchmatch_min_tri_angle) if args.patchmatch_min_tri_angle is not None else None
+    patchmatch_filter_min_tri_angle = (
+        float(args.patchmatch_filter_min_tri_angle) if args.patchmatch_filter_min_tri_angle is not None else None
+    )
+    patchmatch_filter_min_ncc = float(args.patchmatch_filter_min_ncc) if args.patchmatch_filter_min_ncc is not None else None
+    patchmatch_relax_on_failure = bool(args.patchmatch_relax_on_failure)
+    patchmatch_relaxed_min_tri_angle = (
+        float(args.patchmatch_relaxed_min_tri_angle) if args.patchmatch_relaxed_min_tri_angle is not None else None
+    )
+    patchmatch_relaxed_filter_min_tri_angle = (
+        float(args.patchmatch_relaxed_filter_min_tri_angle) if args.patchmatch_relaxed_filter_min_tri_angle is not None else None
+    )
+    patchmatch_relaxed_filter_min_ncc = (
+        float(args.patchmatch_relaxed_filter_min_ncc) if args.patchmatch_relaxed_filter_min_ncc is not None else None
+    )
     image_mode = str(args.image_mode)
     matcher = str(args.matcher)
     mapper_min_model_size = int(args.mapper_min_model_size)
@@ -978,6 +1335,25 @@ def main() -> None:
         if "Mapper.local_ba_min_tri_angle" not in help_out:
             mapper_disable_local_ba_min_tri_angle = True
             print("[info] Docker COLMAP does not support --Mapper.local_ba_min_tri_angle; disabling it.", flush=True)
+
+    # PatchMatch flags are stable in modern COLMAP, but some images can be older. Auto-disable if not supported.
+    if runner_mode == "docker":
+        pm_help = runner.run_capture(["patch_match_stereo", "--help"])
+        if "PatchMatchStereo.min_triangulation_angle" not in pm_help:
+            patchmatch_min_tri_angle = None
+            patchmatch_relaxed_min_tri_angle = None
+            print("[info] Docker COLMAP does not support --PatchMatchStereo.min_triangulation_angle; disabling it.", flush=True)
+        if "PatchMatchStereo.filter_min_triangulation_angle" not in pm_help:
+            patchmatch_filter_min_tri_angle = None
+            patchmatch_relaxed_filter_min_tri_angle = None
+            print(
+                "[info] Docker COLMAP does not support --PatchMatchStereo.filter_min_triangulation_angle; disabling it.",
+                flush=True,
+            )
+        if "PatchMatchStereo.filter_min_ncc" not in pm_help:
+            patchmatch_filter_min_ncc = None
+            patchmatch_relaxed_filter_min_ncc = None
+            print("[info] Docker COLMAP does not support --PatchMatchStereo.filter_min_ncc; disabling it.", flush=True)
 
     diffusion_args = None
     if matcher in {"diffusion", "auto"}:
@@ -1008,6 +1384,45 @@ def main() -> None:
             "min_inliers": int(diffusion_min_inliers),
             "pairing": str(args.diffusion_pairing),
             "topk": int(args.diffusion_topk),
+        }
+
+    dino_args = None
+    if matcher in {"dino", "auto"}:
+        dino_min_inliers = int(args.dino_min_inliers)
+        default_dino_min_inliers = int(parser.get_default("dino_min_inliers"))
+        default_mapper_init_min_inliers = int(parser.get_default("mapper_init_min_num_inliers"))
+        if dino_min_inliers == default_dino_min_inliers and mapper_init_min_num_inliers != default_mapper_init_min_inliers:
+            dino_min_inliers = mapper_init_min_num_inliers
+
+        dino_args = {
+            "cache_dir": str(args.dino_cache_dir) if args.dino_cache_dir else None,
+            "model_id": str(args.dino_model_id),
+            "max_side": int(args.dino_max_side),
+            "layer": int(args.dino_layer) if args.dino_layer is not None else None,
+            "fp16": bool(args.dino_fp16),
+            "device": str(args.dino_device) if args.dino_device else None,
+            "hf_endpoint": str(args.dino_hf_endpoint) if args.dino_hf_endpoint else None,
+            "keypoints": str(args.dino_keypoints),
+            "max_keypoints": int(args.dino_max_keypoints),
+            "min_similarity": float(args.dino_min_similarity),
+            "max_matches": int(args.dino_max_matches),
+            "ransac_thresh_px": float(args.dino_ransac_thresh_px),
+            "min_inliers": int(dino_min_inliers),
+            "pairing": str(args.dino_pairing),
+            "topk": int(args.dino_topk),
+        }
+
+    depth_args = None
+    if bool(args.depth_fallback):
+        depth_args = {
+            "model_id": str(args.depth_model_id),
+            "hf_endpoint": str(args.depth_hf_endpoint) if args.depth_hf_endpoint else None,
+            "device": str(args.depth_device) if args.depth_device else None,
+            "fp16": bool(args.depth_fp16),
+            "align_scale": bool(args.depth_align_scale),
+            "with_color": bool(args.depth_with_color),
+            "stride": int(args.depth_stride),
+            "max_points": int(args.depth_max_points),
         }
 
     jobs = list(
@@ -1077,8 +1492,12 @@ def main() -> None:
                 patchmatch_gpu_index=patchmatch_gpu_index,
                 matcher=matcher,
                 image_mode=image_mode,
+                dino_args=dino_args,
                 diffusion_args=diffusion_args,
                 dense_min_vertices=int(args.dense_min_vertices),
+                depth_fallback=bool(args.depth_fallback),
+                depth_args=depth_args,
+                sparse_only=bool(args.sparse_only),
                 mapper_min_model_size=mapper_min_model_size,
                 mapper_min_num_matches=mapper_min_num_matches,
                 mapper_init_min_num_inliers=mapper_init_min_num_inliers,
@@ -1088,6 +1507,13 @@ def main() -> None:
                 mapper_local_ba_min_tri_angle=mapper_local_ba_min_tri_angle,
                 mapper_tri_ignore_two_view_tracks=mapper_tri_ignore_two_view_tracks,
                 mapper_disable_local_ba_min_tri_angle=mapper_disable_local_ba_min_tri_angle,
+                patchmatch_min_tri_angle=patchmatch_min_tri_angle,
+                patchmatch_filter_min_tri_angle=patchmatch_filter_min_tri_angle,
+                patchmatch_filter_min_ncc=patchmatch_filter_min_ncc,
+                patchmatch_relax_on_failure=patchmatch_relax_on_failure,
+                patchmatch_relaxed_min_tri_angle=patchmatch_relaxed_min_tri_angle,
+                patchmatch_relaxed_filter_min_tri_angle=patchmatch_relaxed_filter_min_tri_angle,
+                patchmatch_relaxed_filter_min_ncc=patchmatch_relaxed_filter_min_ncc,
             )
             if status == "ok":
                 ok += 1

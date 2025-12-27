@@ -64,7 +64,7 @@ data/test (images only)
   - Linux: Docker + NVIDIA Container Toolkit
   - Windows: WSL2 + Docker Desktop with GPU enabled
 
-Quick Docker GPU sanity check (should print your GPU):
+Quick Docker GPU check (should print your GPU):
 ```bash
 docker run --rm --gpus all nvidia/cuda:12.2.0-base-ubuntu22.04 nvidia-smi
 ```
@@ -74,7 +74,7 @@ docker run --rm --gpus all nvidia/cuda:12.2.0-base-ubuntu22.04 nvidia-smi
 ## 3) Get the code
 
 ```bash
-git clone <THIS_REPO_URL>
+git clone https://github.com/LucaVellage/ImageMatchingChallenge2025
 cd ImageMatchingChallenge2025
 ```
 
@@ -212,7 +212,8 @@ This step runs SfM (camera poses) + dense stereo (point cloud) per cluster.
 
 `--matcher auto` tries:
 1) COLMAP SIFT features/matching
-2) if that fails, diffusion-feature matching (optional and heavy)
+2) if that fails, DINOv2 patch-descriptor matching
+3) if that fails, diffusion-feature matching (optional and heavy)
 
 ```bash
 HF_ENDPOINT=https://hf-mirror.com \
@@ -229,6 +230,22 @@ Outputs (per cluster directory `outputs_retrieval_test/<dataset>_<scene>/`):
 - `dense_points.ply` (dense point cloud)
 - `sparse/<model_id>/` (SfM model)
 - `dense/` (MVS workspace)
+
+If you see tiny / empty pointclouds (e.g. a ~200-byte PLY or only a few points), use the depth fallback:
+
+```bash
+HF_ENDPOINT=https://hf-mirror.com \
+python scripts/colmap_dense_clusters.py \
+  --clusters-csv cache/clusters_retrieval.csv \
+  --data-root data/test \
+  --output-root outputs_retrieval_test \
+  --runner docker \
+  --matcher auto \
+  --dense-min-vertices 5000 \
+  --depth-fallback \
+  --depth-hf-endpoint https://hf-mirror.com \
+  --overwrite
+```
 
 ### 9.2 If you only want classic COLMAP (fastest)
 
@@ -262,6 +279,22 @@ Important:
 - First run will download GBs of model weights.
 - Diffusion is compute-heavy. Use it selectively for “hard” clusters or demos.
 
+### 9.4 If you want “wow factor” DINOv2 matching
+
+This uses a foundation vision model (DINOv2) as a dense descriptor grid to propose correspondences, then verifies them with geometry and writes them into a COLMAP DB.
+
+```bash
+HF_ENDPOINT=https://hf-mirror.com \
+python scripts/colmap_dense_clusters.py \
+  --clusters-csv cache/clusters_retrieval.csv \
+  --data-root data/test \
+  --output-root outputs_retrieval_test \
+  --runner docker \
+  --matcher dino \
+  --dino-hf-endpoint https://hf-mirror.com \
+  --overwrite
+```
+
 ---
 
 ## 10) Visualize (for debugging and presentations)
@@ -282,6 +315,17 @@ python scripts/pose_explorer.py \
   --csv submission.csv \
   --images-root outputs_retrieval_test/ETs_cluster_0001/images \
   --pointcloud outputs_retrieval_test/ETs_cluster_0001/dense_points.ply
+```
+
+### 10.3 Export HTML demos (presentation-ready)
+
+This exports one interactive Plotly HTML per cluster + an `index.html` linking them:
+
+```bash
+python scripts/export_demo.py \
+  --submission-csv submission.csv \
+  --recon-root outputs_retrieval_test \
+  --out-dir outputs/demo
 ```
 
 ---
@@ -306,7 +350,7 @@ Some COLMAP Docker images don’t support that flag. The script auto-detects sup
 ### “No good initial image pair found” / “Discarding reconstruction due to bad initial pair”
 This means SfM could not bootstrap (images might not overlap, or matching is too weak).
 Try:
-- `--matcher auto` (falls back to diffusion)
+- `--matcher auto` (falls back to DINO then diffusion)
 - More permissive mapper params:
   - `--mapper-min-model-size 2`
   - `--mapper-init-min-num-inliers 8`
@@ -328,6 +372,12 @@ conda env create -f environment_no_builds.yml
 conda activate imc25
 pip install -e .[train]
 
+# 2) run everything end-to-end (writes `submission.csv`)
+HF_ENDPOINT=https://hf-mirror.com python scripts/run_pipeline.py --runner docker --overwrite
+
+# Optional: also run dense MVS (writes `dense_points.ply` per cluster)
+HF_ENDPOINT=https://hf-mirror.com python scripts/run_pipeline.py --runner docker --dense --overwrite
+
 # 2) train retrieval
 HF_ENDPOINT=https://hf-mirror.com python scripts/train_retrieval.py --output-dir outputs/retrieval_finetune
 
@@ -340,4 +390,3 @@ python scripts/cluster_retrieval.py --cache-root cache_retrieval --out-csv cache
 # 5) dense reconstruction
 HF_ENDPOINT=https://hf-mirror.com python scripts/colmap_dense_clusters.py --clusters-csv cache/clusters_retrieval.csv --data-root data/test --output-root outputs_retrieval_test --runner docker --matcher colmap --overwrite
 ```
-

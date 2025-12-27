@@ -115,6 +115,17 @@ def index_images(images_root: Path) -> dict[str, Path]:
 
 
 def load_pointcloud(path: Path, *, max_points: int = 150_000) -> PointCloud:
+    if not path.exists():
+        raise FileNotFoundError(f"pointcloud not found: {path}")
+
+    def _downsample(pts: np.ndarray, cols: np.ndarray | None) -> PointCloud:
+        if max_points and pts.shape[0] > max_points:
+            idx = np.random.default_rng(0).choice(pts.shape[0], size=max_points, replace=False)
+            pts = pts[idx]
+            cols = cols[idx] if cols is not None else None
+        return PointCloud(points=pts.astype(np.float32, copy=False), colors=cols)
+
+    # Prefer Open3D if available (handles many PLY variants), otherwise fall back to a minimal PLY reader.
     try:
         import warnings
 
@@ -124,18 +135,112 @@ def load_pointcloud(path: Path, *, max_points: int = 150_000) -> PointCloud:
             category=UserWarning,
         )
         import open3d as o3d  # type: ignore
-    except Exception as e:
-        raise RuntimeError("open3d is not installed; cannot load pointcloud") from e
-    if not path.exists():
-        raise FileNotFoundError(f"pointcloud not found: {path}")
-    pcd = o3d.io.read_point_cloud(str(path))
-    pts = np.asarray(pcd.points, dtype=np.float32)
-    cols = np.asarray(pcd.colors, dtype=np.float32) if pcd.has_colors() else None
-    if max_points and pts.shape[0] > max_points:
-        idx = np.random.default_rng(0).choice(pts.shape[0], size=max_points, replace=False)
-        pts = pts[idx]
-        cols = cols[idx] if cols is not None else None
-    return PointCloud(points=pts, colors=cols)
+
+        pcd = o3d.io.read_point_cloud(str(path))
+        pts = np.asarray(pcd.points, dtype=np.float32)
+        cols = np.asarray(pcd.colors, dtype=np.float32) if pcd.has_colors() else None
+        return _downsample(pts, cols)
+    except Exception:
+        pass
+
+    def _read_ply_minimal(p: Path) -> tuple[np.ndarray, np.ndarray | None]:
+        with p.open("rb") as f:
+            header = []
+            while True:
+                line = f.readline()
+                if not line:
+                    raise ValueError("Unexpected EOF while reading PLY header")
+                header.append(line.decode("ascii", errors="replace").strip())
+                if header[-1] == "end_header":
+                    break
+
+            fmt = "ascii"
+            n_verts = None
+            in_vertex = False
+            props: list[tuple[str, str]] = []
+            for line in header:
+                if line.startswith("format "):
+                    fmt = line.split()[1].strip()
+                if line.startswith("element vertex "):
+                    n_verts = int(line.split()[-1])
+                    in_vertex = True
+                    continue
+                if line.startswith("element ") and in_vertex and not line.startswith("element vertex "):
+                    in_vertex = False
+                if in_vertex and line.startswith("property "):
+                    parts = line.split()
+                    if len(parts) >= 3 and parts[1] != "list":
+                        props.append((parts[1], parts[2]))
+
+            if n_verts is None:
+                raise ValueError("PLY header missing 'element vertex'")
+
+            name_to_idx = {name: i for i, (_, name) in enumerate(props)}
+            want = ["x", "y", "z"]
+            if not all(k in name_to_idx for k in want):
+                raise ValueError(f"PLY is missing required vertex properties {want}: {p}")
+
+            has_rgb = all(k in name_to_idx for k in ["red", "green", "blue"])
+
+            if fmt == "ascii":
+                pts = np.zeros((n_verts, 3), dtype=np.float32)
+                cols = np.zeros((n_verts, 3), dtype=np.float32) if has_rgb else None
+                for i in range(int(n_verts)):
+                    line = f.readline()
+                    if not line:
+                        break
+                    parts = line.decode("ascii", errors="replace").strip().split()
+                    if len(parts) < len(props):
+                        continue
+                    pts[i, 0] = float(parts[name_to_idx["x"]])
+                    pts[i, 1] = float(parts[name_to_idx["y"]])
+                    pts[i, 2] = float(parts[name_to_idx["z"]])
+                    if cols is not None:
+                        r = float(parts[name_to_idx["red"]])
+                        g = float(parts[name_to_idx["green"]])
+                        b = float(parts[name_to_idx["blue"]])
+                        cols[i] = np.array([r, g, b], dtype=np.float32) / 255.0
+                return pts, cols
+
+            if fmt != "binary_little_endian":
+                raise ValueError(f"Unsupported PLY format: {fmt}")
+
+            type_map = {
+                "char": "i1",
+                "int8": "i1",
+                "uchar": "u1",
+                "uint8": "u1",
+                "short": "<i2",
+                "int16": "<i2",
+                "ushort": "<u2",
+                "uint16": "<u2",
+                "int": "<i4",
+                "int32": "<i4",
+                "uint": "<u4",
+                "uint32": "<u4",
+                "float": "<f4",
+                "float32": "<f4",
+                "double": "<f8",
+                "float64": "<f8",
+            }
+            dtype_fields = []
+            for t, name in props:
+                dt = type_map.get(t)
+                if dt is None:
+                    raise ValueError(f"Unsupported PLY property type: {t}")
+                dtype_fields.append((name, dt))
+            dt = np.dtype(dtype_fields)
+            raw = f.read(int(n_verts) * dt.itemsize)
+            arr = np.frombuffer(raw, dtype=dt, count=int(n_verts))
+            pts = np.stack([arr["x"].astype(np.float32), arr["y"].astype(np.float32), arr["z"].astype(np.float32)], axis=1)
+            cols = None
+            if has_rgb:
+                rgb = np.stack([arr["red"], arr["green"], arr["blue"]], axis=1).astype(np.float32) / 255.0
+                cols = rgb
+            return pts, cols
+
+    pts, cols = _read_ply_minimal(path)
+    return _downsample(pts, cols)
 
 
 def _image_aspect(path: Path) -> float | None:
