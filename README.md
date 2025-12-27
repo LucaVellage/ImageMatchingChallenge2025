@@ -1,2 +1,75 @@
 # ImageMatchingChallenge2025
 Kaggle Competition: Image Matching Challenge 2025
+
+## Setup
+- (Recommended) Install as an editable package: `pip install -e .`
+- Alternatively, run the wrappers in `scripts/` directly.
+
+## Pipeline
+See `PIPELINE.md` for a step-by-step end-to-end guide (training → clustering → SfM/MVS → visualization).
+
+## Notebooks
+Curated and exploratory notebooks live in `notebooks/`.
+
+## Demo: Pose Explorer (wow-factor visualization)
+Interactive 3D viewer for `submission.csv` (camera centers + optional pointcloud overlay).
+
+- Run a local web app:
+  - `python scripts/pose_explorer.py --csv submission.csv --images-root outputs/ETs_cluster_0001/images --pointcloud outputs/ETs_cluster_0001/dense_points.ply`
+  - (After install) `imc25-pose-explorer --csv submission.csv --images-root outputs/ETs_cluster_0001/images --pointcloud outputs/ETs_cluster_0001/dense_points.ply`
+- Export a standalone HTML you can open in a browser:
+  - `python scripts/pose_explorer.py --csv submission.csv --images-root outputs/ETs_cluster_0001/images --pointcloud outputs/ETs_cluster_0001/dense_points.ply --export-html outputs/pose_explorer_demo.html --no-server`
+
+## Demo: Jigsaw Explorer (graph + clusters + outliers)
+Interactive “jigsaw puzzle” view of the image collection as a graph (edges from appearance similarity or geometric inliers), with thumbnails and neighbor inspection.
+
+- Start the dashboard:
+  - `python scripts/jigsaw_explorer.py`
+  - (After install) `imc25-jigsaw-explorer`
+  - Open `http://127.0.0.1:8060`
+
+## Build dense point clouds per cluster
+Generate `dense_points.ply` for each cluster listed in `cache/clusters.csv` (skips `outliers`).
+
+- Dry-run (prints planned COLMAP commands):
+  - `python scripts/colmap_dense_clusters.py --dry-run`
+- Run for real (auto picks local `colmap` or Docker):
+  - `python scripts/colmap_dense_clusters.py`
+- Force Docker (recommended if local COLMAP has no CUDA):
+  - `python scripts/colmap_dense_clusters.py --runner docker`
+  - If COLMAP fails to initialize (small baseline / few images), try lowering thresholds:
+    - `python scripts/colmap_dense_clusters.py --runner docker --mapper-init-min-tri-angle 1.0 --mapper-init-min-num-inliers 15 --mapper-min-model-size 2`
+  - If it still fails with “insufficient triangulation angle”, also lower the triangulation/BA angles:
+    - `python scripts/colmap_dense_clusters.py --runner docker --mapper-tri-min-angle 0.05 --mapper-filter-min-tri-angle 0.05 --mapper-local-ba-min-tri-angle 0.05`
+  - If you only have a single connected pair, allow two-view tracks:
+    - `python scripts/colmap_dense_clusters.py --runner docker --mapper-tri-ignore-two-view-tracks 0`
+  - If Docker COLMAP is older and rejects some flags:
+    - `python scripts/colmap_dense_clusters.py --runner docker --mapper-disable-local-ba-min-tri-angle`
+
+## Cutting-edge demo: Diffusion-feature matching into COLMAP
+Use Stable Diffusion U-Net intermediate features as dense descriptors to propose correspondences, RANSAC-verify them, and write them into a COLMAP `colmap.db` (so `colmap mapper` + dense stereo can run on those matches).
+
+- Install optional deps (you still need a working `torch` install):
+  - `pip install -e .[diffusion]`
+- Run dense reconstruction using diffusion matching:
+  - `python scripts/colmap_dense_clusters.py --matcher diffusion --runner docker --dataset ETs --scene cluster_0002`
+  - Using a Hugging Face mirror: `python scripts/colmap_dense_clusters.py --matcher diffusion --diffusion-hf-endpoint https://hf-mirror.com ...`
+- Or build a DB for a single images folder:
+  - `python scripts/diffusion_to_colmap.py --images-dir outputs/ETs_cluster_0002/images --db-path outputs/ETs_cluster_0002/colmap_diffusion.db --overwrite`
+  - Using a Hugging Face mirror: `python scripts/diffusion_to_colmap.py --hf-endpoint https://hf-mirror.com ...`
+  - If it looks “stuck”, it’s usually downloading the diffusion model the first time; you should now see `[diffusion] ...` progress logs.
+
+## Training (recommended): fine-tune retrieval embeddings for better clustering
+IMC25 provides `data/train_labels.csv` (scene labels + poses). A high-ROI way to use training is to fine-tune a retrieval embedding model so images from the same scene group together more cleanly.
+
+1) Train a retrieval embedder (Supervised Contrastive on scene labels):
+- `HF_ENDPOINT=https://hf-mirror.com python scripts/train_retrieval.py --model-id facebook/dinov2-small --output-dir outputs/retrieval_finetune`
+
+2) Build an embeddings cache for the split you want to cluster (`data/test` by default):
+- `HF_ENDPOINT=https://hf-mirror.com python scripts/build_retrieval_cache.py --data-root data/test --cache-root cache_retrieval --checkpoint outputs/retrieval_finetune/best.pt --topk 30 --mutual`
+
+3) Cluster per dataset using the embedding kNN graph:
+- `python scripts/cluster_retrieval.py --cache-root cache_retrieval --out-csv cache/clusters_retrieval.csv`
+
+4) Feed the clusters into SfM/MVS (dense pointcloud per cluster):
+- `python scripts/colmap_dense_clusters.py --clusters-csv cache/clusters_retrieval.csv --data-root data/test --runner docker`
