@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "imc25"
+version = "0.1.0"
+description = "Image Matching Challenge 2025 pipelines and demos"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "dash>=3",
+  "networkx",
+  "numpy",
+  "pandas",
+  "pillow",
+  "plotly",
+]
+
+[project.optional-dependencies]
+pointcloud = ["open3d"]
+diffusion = [
+  "diffusers",
+  "transformers",
+  "accelerate",
+]
+train = [
+  "scikit-learn",
+  "timm",
+  "torchvision",
+  "tqdm",
+  "transformers",
+]
+
+[project.scripts]
+imc25-pose-explorer = "imc25.viz.pose_explorer:main"
+imc25-jigsaw-explorer = "imc25.viz.jigsaw_explorer:main"
+imc25-colmap-dense-clusters = "imc25.recon.colmap_dense_clusters:main"
+imc25-diffusion-to-colmap = "imc25.matching.diffusion_to_colmap:main"
+imc25-train-retrieval = "imc25.train.retrieval_train:main"
+imc25-build-retrieval-cache = "imc25.train.retrieval_cache:main"
+imc25-cluster-retrieval = "imc25.train.retrieval_cluster:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
