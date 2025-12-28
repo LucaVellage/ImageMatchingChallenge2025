@@ -40,10 +40,12 @@ def colmap_feature_extractor(db_path, img_dir, cfg, env):
         "--SiftExtraction.first_octave", str(cfg.first_octave),
     ], timeout=cfg.timeout_default, env=env)
 
-def colmap_exhaustive_matcher(db_path, cfg, env):
+def colmap_matches_importer(db_path, pairs_txt, cfg, env):
     run([
-        cfg.colmap_bin, "exhaustive_matcher",
+        cfg.colmap_bin, "matches_importer",
         "--database_path", db_path,
+        "--match_list_path", pairs_txt,
+        "--match_type", "pairs",
         "--SiftMatching.use_gpu", "1" if cfg.use_gpu else "0",
         "--SiftMatching.num_threads", str(cfg.sift_matching_num_threads),
     ], timeout=cfg.timeout_default, env=env)
