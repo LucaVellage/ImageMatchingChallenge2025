@@ -11,3 +11,4 @@ Suggested order:
 - `notebooks/03_diffusion_postprocess.ipynb`: diffusion-based post-processing experiments.
 - `notebooks/04_gpu_colmap_docker_pipeline.ipynb`: GPU COLMAP + Docker pipeline walkthrough.
 - `notebooks/05_retrieval_finetune_vs_pretrained.ipynb`: quantitative + visual comparison of retrieval embeddings (pretrained vs fine-tuned).
+- `notebooks/99_submission_notebook.ipynb`: single end-to-end notebook to generate `submission.csv`.

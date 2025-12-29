@@ -8,6 +8,12 @@ Kaggle Competition: Image Matching Challenge 2025
 ## Pipeline
 See `PIPELINE.md` for a step-by-step end-to-end guide (training → clustering → SfM/MVS → visualization).
 
+One-command run (train → cluster → COLMAP → `submission.csv`):
+- `HF_ENDPOINT=https://hf-mirror.com python scripts/run_pipeline.py --runner docker --overwrite`
+
+One-command “wow factor” run (adds DINO+diffusion fallback matching, dense MVS, depth-based dense fallback, and exports demo HTML):
+- `HF_ENDPOINT=https://hf-mirror.com python scripts/run_pipeline.py --preset sota --runner docker --overwrite`
+
 ## Notebooks
 Curated and exploratory notebooks live in `notebooks/`.
 
@@ -45,6 +51,8 @@ Generate `dense_points.ply` for each cluster listed in `cache/clusters.csv` (ski
     - `python scripts/colmap_dense_clusters.py --runner docker --mapper-tri-ignore-two-view-tracks 0`
   - If Docker COLMAP is older and rejects some flags:
     - `python scripts/colmap_dense_clusters.py --runner docker --mapper-disable-local-ba-min-tri-angle`
+  - If dense pointclouds are empty/tiny, enable depth fallback:
+    - `python scripts/colmap_dense_clusters.py --runner docker --dense-min-vertices 5000 --depth-fallback`
 
 ## Cutting-edge demo: Diffusion-feature matching into COLMAP
 Use Stable Diffusion U-Net intermediate features as dense descriptors to propose correspondences, RANSAC-verify them, and write them into a COLMAP `colmap.db` (so `colmap mapper` + dense stereo can run on those matches).
@@ -58,6 +66,10 @@ Use Stable Diffusion U-Net intermediate features as dense descriptors to propose
   - `python scripts/diffusion_to_colmap.py --images-dir outputs/ETs_cluster_0002/images --db-path outputs/ETs_cluster_0002/colmap_diffusion.db --overwrite`
   - Using a Hugging Face mirror: `python scripts/diffusion_to_colmap.py --hf-endpoint https://hf-mirror.com ...`
   - If it looks “stuck”, it’s usually downloading the diffusion model the first time; you should now see `[diffusion] ...` progress logs.
+
+## Cutting-edge demo: DINOv2 matching into COLMAP
+Use DINOv2 patch descriptors as a dense matching grid to propose correspondences and feed them into COLMAP:
+- `python scripts/colmap_dense_clusters.py --matcher dino --runner docker`
 
 ## Training (recommended): fine-tune retrieval embeddings for better clustering
 IMC25 provides `data/train_labels.csv` (scene labels + poses). A high-ROI way to use training is to fine-tune a retrieval embedding model so images from the same scene group together more cleanly.

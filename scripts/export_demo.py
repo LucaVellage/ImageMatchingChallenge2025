@@ -1,0 +1,6 @@
+from imc25.viz.demo_export import main
+
+
+if __name__ == "__main__":
+    main()
+
