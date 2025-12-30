@@ -259,6 +259,12 @@ def main() -> None:
     parser.add_argument("--cluster-method", default="louvain", choices=["louvain", "greedy", "components"])
     parser.add_argument("--min-cluster-size", type=int, default=3)
 
+    # Edge scoring for clustering 
+    parser.add_argument("--edge-scorer", default="cosine", choices=["cosine", "mlp", "gbdt"])
+    parser.add_argument("--edge-model", type=Path, default=None, help="Path to trained edge model (required for mlp).",)
+    parser.add_argument("--edge-topm", type=int, default=None, help="Keep only top-M scored neighbors per image (after edge scoring).",)
+
+
     parser.add_argument("--recon-output-root", type=Path, default=Path("outputs_retrieval_test"))
     parser.add_argument("--runner", default="auto", choices=["auto", "local", "docker"])
     parser.add_argument("--matcher", default="colmap", choices=["colmap", "dino", "diffusion", "auto"])
@@ -363,6 +369,26 @@ def main() -> None:
         cmd += ["--overwrite"]
     _run(cmd, dry_run=bool(args.dry_run), env=env)
 
+
+    # Resolve edge scorer + model artifact
+    edge_scorer = str(args.edge_scorer)
+
+    default_mlp = Path("outputs/edge_models/edge_mlp_final.pt")
+    default_gbdt = Path("outputs/edge_models/edge_gbdt_final.joblib") 
+
+    edge_model = args.edge_model
+    if edge_scorer == "mlp" and edge_model is None:
+        edge_model = default_mlp
+    if edge_scorer == "gbdt" and edge_model is None:
+        edge_model = default_gbdt
+
+    if edge_scorer in {"mlp", "gbdt"}:
+        if edge_model is None or (not edge_model.exists() and not args.dry_run):
+            raise SystemExit(
+                f"--edge-scorer {edge_scorer} requires a valid --edge-model (got: {edge_model})"
+            )
+
+    # Now run clustering (or skip)
     if args.clusters_csv.exists() and not args.overwrite:
         print(f"[skip] clustering: {args.clusters_csv} exists (use --overwrite to rebuild)", flush=True)
     else:
@@ -381,11 +407,20 @@ def main() -> None:
             str(args.cluster_method),
             "--min-cluster-size",
             str(int(args.min_cluster_size)),
+            "--edge-scorer",
+            edge_scorer,
         ]
+
+        if edge_scorer in {"mlp", "gbdt"}:
+            cmd += ["--edge-model", str(edge_model)]
+            if args.edge_topm is not None:
+                cmd += ["--edge-topm", str(int(args.edge_topm))]
+
         if args.mutual:
             cmd += ["--mutual"]
         else:
             cmd += ["--no-mutual"]
+
         _run(cmd, dry_run=bool(args.dry_run), env=env)
 
     if not args.clusters_csv.exists() and not args.dry_run:

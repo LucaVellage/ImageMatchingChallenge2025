@@ -7,8 +7,6 @@ This repo contains an end-to-end pipeline for the Image Matching Challenge 2025 
 3) **Reconstruct** each scene with COLMAP (SfM) and optionally compute **dense** point clouds.
 4) **Visualize** clusters and poses for presentations and debugging.
 
-The goal of this document is that someone with *no prior computer vision background* can reproduce the results.
-
 ---
 
 ## 0) What is IMC25 asking you to do?
@@ -259,7 +257,7 @@ python scripts/colmap_dense_clusters.py \
   --overwrite
 ```
 
-### 9.3 If you want “wow factor” diffusion matching
+### 9.3 Diffusion matching
 
 This uses Stable Diffusion U-Net features as dense descriptors to propose correspondences and writes them into a COLMAP DB.
 

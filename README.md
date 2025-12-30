@@ -17,7 +17,7 @@ One-command “wow factor” run (adds DINO+diffusion fallback matching, dense M
 ## Notebooks
 Curated and exploratory notebooks live in `notebooks/`.
 
-## Demo: Pose Explorer (wow-factor visualization)
+## Demo: Pose Explorer
 Interactive 3D viewer for `submission.csv` (camera centers + optional pointcloud overlay).
 
 - Run a local web app:
