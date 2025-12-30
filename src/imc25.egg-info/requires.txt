@@ -1,0 +1,24 @@
+dash>=3
+networkx
+numpy
+pandas
+pillow
+plotly
+
+[diffusion]
+diffusers
+transformers
+accelerate
+
+[lightglue]
+lightglue@ git+https://github.com/cvg/LightGlue.git
+
+[pointcloud]
+open3d
+
+[train]
+scikit-learn
+timm
+torchvision
+tqdm
+transformers

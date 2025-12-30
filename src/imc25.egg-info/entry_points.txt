@@ -1,0 +1,11 @@
+[console_scripts]
+imc25-build-retrieval-cache = imc25.train.retrieval_cache:main
+imc25-cluster-retrieval = imc25.train.retrieval_cluster:main
+imc25-colmap-dense-clusters = imc25.recon.colmap_dense_clusters:main
+imc25-diffusion-to-colmap = imc25.matching.diffusion_to_colmap:main
+imc25-dino-to-colmap = imc25.matching.dino_to_colmap:main
+imc25-export-demo = imc25.viz.demo_export:main
+imc25-jigsaw-explorer = imc25.viz.jigsaw_explorer:main
+imc25-lightglue-to-colmap = imc25.matching.lightglue_to_colmap:main
+imc25-pose-explorer = imc25.viz.pose_explorer:main
+imc25-train-retrieval = imc25.train.retrieval_train:main
