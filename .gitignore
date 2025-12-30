@@ -1,3 +1,13 @@
 .venv
 /data
 *.Identifier
+
+venv/
+.venv/
+env/
+.env/
+ENV/
+
+.conda/
+conda-env/
+envs/

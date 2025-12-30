@@ -1,0 +1,30 @@
+{
+  "created_at": "2025-12-30 10:36:01",
+  "model_id": "facebook/dinov2-small",
+  "embed_dim": 256,
+  "freeze_backbone": true,
+  "train_size": 1747,
+  "val_size": 198,
+  "args": {
+    "data_root": "data\\train",
+    "labels_csv": "data\\train_labels.csv",
+    "output_dir": "outputs\\retrieval_finetune",
+    "hf_endpoint": null,
+    "model_id": "facebook/dinov2-small",
+    "embed_dim": 256,
+    "freeze_backbone": true,
+    "include_outliers": true,
+    "dataset": null,
+    "max_samples": null,
+    "epochs": 6,
+    "batch_size": 48,
+    "lr": 0.0003,
+    "weight_decay": 0.0001,
+    "temperature": 0.07,
+    "val_ratio": 0.1,
+    "seed": 42,
+    "num_workers": 4,
+    "fp16": true,
+    "device": null
+  }
+}
