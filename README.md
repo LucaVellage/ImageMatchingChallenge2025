@@ -11,6 +11,10 @@ competition baseline. In addition to producing a valid IMC-style `submission.csv
 Most artifacts are generated into `cache*/` and `outputs*/` and are ignored by git. The only tracked artifacts under
 `outputs/` are small model files in `outputs/edge_models/`.
 
+## Dataset
+
+Download link: https://cloud.tsinghua.edu.cn/d/939762129c3447978f38/
+
 ## Setup
 
 - Install (recommended): `pip install -e .`
