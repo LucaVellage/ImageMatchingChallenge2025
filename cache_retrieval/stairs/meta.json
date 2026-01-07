@@ -1,7 +1,7 @@
 {
   "dataset": "stairs",
   "backend": "retrieval_finetune",
-  "model": "facebook/dinov2-base",
+  "model": "facebook/dinov2-small",
   "embed_dim": 256,
   "checkpoint": "outputs/retrieval_finetune/best.pt",
   "image_ids": [
@@ -113,9 +113,9 @@
   "topk": 30,
   "mutual": true,
   "checkpoint_meta": {
-    "epoch": 5,
-    "loss": 0.8801861968305376,
-    "r@1": 0.9179487228393555,
-    "r@5": 0.9948717951774597
+    "epoch": 6,
+    "loss": 0.8855397030711174,
+    "r@1": 0.8974359035491943,
+    "r@5": 0.9794871807098389
   }
 }

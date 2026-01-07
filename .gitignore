@@ -1,22 +1,27 @@
-.venv
-/data
+.venv/
+
+# Local datasets / downloads
+/data/
+
+# Generated artifacts (pipelines, experiments)
+/cache*/
+/outputs*/
+/logs/
+/tmp/
+
+# Python caches
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.py[cod]
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Misc
 *.Identifier
-/cache
-/outputs
-/outputs_hero
-/outputs_retrieval_test
-/tmp
-/outputs_validate_dino
-/outputs_validate_dino2
-/outputs_validate_dino
-/outputs_validate4
-/outputs_validate2
-/outputs_validate
-/outputs_submission
-/outputs_debug2
-/cache_retrieval_train
-/cache_retrieval_split
-/outputs_validate3
-/cache_retrieval_split_ets_stairs
+.DS_Store
+
+# Local notes
 docs/ARCHITECTURE.md
-*/__pycache__/

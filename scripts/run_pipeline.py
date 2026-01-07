@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import os
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -13,5 +14,5 @@ from imc25.pipeline.run_pipeline import main
 
 
 if __name__ == "__main__":
+    os.chdir(_ROOT)
     main()
-
