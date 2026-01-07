@@ -1,3 +1,6 @@
+> This folder is a copy of the upstream LightGlue repository (third-party code). If you’re looking for the canonical
+> docs, issues, and updates, start here: https://github.com/cvg/LightGlue
+
 <p align="center">
   <h1 align="center"><ins>LightGlue</ins> ⚡️<br>Local Feature Matching at Light Speed</h1>
   <p align="center">

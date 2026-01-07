@@ -8,7 +8,6 @@ print_step(){
   printf '\n==== %s ====%n' "$1"
 }
 
-# Sanity checks
 if ! command -v docker >/dev/null 2>&1; then
   echo "docker not found" >&2
   exit 1

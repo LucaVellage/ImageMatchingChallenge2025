@@ -1,87 +1,57 @@
-# ImageMatchingChallenge2025
-Kaggle Competition: Image Matching Challenge 2025
+# Image Matching Challenge 2025 (IMC25)
+
+This started as a practical pipeline for the Kaggle Image Matching Challenge 2025, but it goes beyond the
+competition baseline. In addition to producing a valid IMC-style `submission.csv`, the repo includes:
+
+- advanced matcher fallbacks (DINOv2 and diffusion features),
+- learned edge scoring for improved clustering,
+- visualization tools (Jigsaw/Pose Explorer and HTML demo export),
+- ablation and comparison notebooks aimed at analysis and paper-ready results.
+
+Most artifacts are generated into `cache*/` and `outputs*/` and are ignored by git. The only tracked artifacts under
+`outputs/` are small model files in `outputs/edge_models/`.
 
 ## Setup
-- (Recommended) Install as an editable package: `pip install -e .`
-- Alternatively, run the wrappers in `scripts/` directly.
 
-## Pipeline
-See `PIPELINE.md` for a step-by-step end-to-end guide (training → clustering → SfM/MVS → visualization).
+- Install (recommended): `pip install -e .`
+- Extra dependencies:
+  - training: `pip install -e '.[train]'`
+  - diffusion matching: `pip install -e '.[diffusion]'`
+  - pointcloud viewing (Open3D): `pip install -e '.[pointcloud]'`
+- No install: you can also run the wrappers in `scripts/` directly.
 
-One-command run (train → cluster → COLMAP → `submission.csv`):
+## Quick start
+
+For a full end-to-end walkthrough, see `PIPELINE.md`.
+
+End-to-end (train → cache → cluster → SfM → `submission.csv`):
+
 - `HF_ENDPOINT=https://hf-mirror.com python scripts/run_pipeline.py --runner docker --overwrite`
 
-One-command “wow factor” run (adds DINO+diffusion fallback matching, dense MVS, depth-based dense fallback, and exports demo HTML):
+A heavier run (adds matcher fallbacks + dense MVS + depth fallback + HTML demos):
+
 - `HF_ENDPOINT=https://hf-mirror.com python scripts/run_pipeline.py --preset sota --runner docker --overwrite`
 
+## Demos
+
+### Pose Explorer
+
+Interactive 3D viewer for a submission CSV (camera centers + optional pointcloud overlay).
+
+- Run the local app:
+  - `python scripts/pose_explorer.py --csv submission.csv --images-root outputs_retrieval_test/ETs_cluster_0001/images`
+  - after install: `imc25-pose-explorer --csv submission.csv --images-root outputs_retrieval_test/ETs_cluster_0001/images`
+  - optional (only if you ran dense): add `--pointcloud outputs_retrieval_test/ETs_cluster_0001/dense_points.ply`
+- Export a standalone HTML:
+  - `python scripts/pose_explorer.py --csv submission.csv --images-root outputs_retrieval_test/ETs_cluster_0001/images --export-html outputs/pose_explorer_demo.html --no-server`
+
+### Jigsaw Explorer
+
+A small dashboard to inspect the retrieval graph (neighbors, clusters, outliers).
+
+- Start it: `python scripts/jigsaw_explorer.py` (or `imc25-jigsaw-explorer` after install)
+- Open `http://127.0.0.1:8060`
+
 ## Notebooks
-Curated and exploratory notebooks live in `notebooks/`.
 
-## Demo: Pose Explorer
-Interactive 3D viewer for `submission.csv` (camera centers + optional pointcloud overlay).
-
-- Run a local web app:
-  - `python scripts/pose_explorer.py --csv submission.csv --images-root outputs/ETs_cluster_0001/images --pointcloud outputs/ETs_cluster_0001/dense_points.ply`
-  - (After install) `imc25-pose-explorer --csv submission.csv --images-root outputs/ETs_cluster_0001/images --pointcloud outputs/ETs_cluster_0001/dense_points.ply`
-- Export a standalone HTML you can open in a browser:
-  - `python scripts/pose_explorer.py --csv submission.csv --images-root outputs/ETs_cluster_0001/images --pointcloud outputs/ETs_cluster_0001/dense_points.ply --export-html outputs/pose_explorer_demo.html --no-server`
-
-## Demo: Jigsaw Explorer (graph + clusters + outliers)
-Interactive “jigsaw puzzle” view of the image collection as a graph (edges from appearance similarity or geometric inliers), with thumbnails and neighbor inspection.
-
-- Start the dashboard:
-  - `python scripts/jigsaw_explorer.py`
-  - (After install) `imc25-jigsaw-explorer`
-  - Open `http://127.0.0.1:8060`
-
-## Build dense point clouds per cluster
-Generate `dense_points.ply` for each cluster listed in `cache/clusters.csv` (skips `outliers`).
-
-- Dry-run (prints planned COLMAP commands):
-  - `python scripts/colmap_dense_clusters.py --dry-run`
-- Run for real (auto picks local `colmap` or Docker):
-  - `python scripts/colmap_dense_clusters.py`
-- Force Docker (recommended if local COLMAP has no CUDA):
-  - `python scripts/colmap_dense_clusters.py --runner docker`
-  - If COLMAP fails to initialize (small baseline / few images), try lowering thresholds:
-    - `python scripts/colmap_dense_clusters.py --runner docker --mapper-init-min-tri-angle 1.0 --mapper-init-min-num-inliers 15 --mapper-min-model-size 2`
-  - If it still fails with “insufficient triangulation angle”, also lower the triangulation/BA angles:
-    - `python scripts/colmap_dense_clusters.py --runner docker --mapper-tri-min-angle 0.05 --mapper-filter-min-tri-angle 0.05 --mapper-local-ba-min-tri-angle 0.05`
-  - If you only have a single connected pair, allow two-view tracks:
-    - `python scripts/colmap_dense_clusters.py --runner docker --mapper-tri-ignore-two-view-tracks 0`
-  - If Docker COLMAP is older and rejects some flags:
-    - `python scripts/colmap_dense_clusters.py --runner docker --mapper-disable-local-ba-min-tri-angle`
-  - If dense pointclouds are empty/tiny, enable depth fallback:
-    - `python scripts/colmap_dense_clusters.py --runner docker --dense-min-vertices 5000 --depth-fallback`
-
-## Cutting-edge demo: Diffusion-feature matching into COLMAP
-Use Stable Diffusion U-Net intermediate features as dense descriptors to propose correspondences, RANSAC-verify them, and write them into a COLMAP `colmap.db` (so `colmap mapper` + dense stereo can run on those matches).
-
-- Install optional deps (you still need a working `torch` install):
-  - `pip install -e .[diffusion]`
-- Run dense reconstruction using diffusion matching:
-  - `python scripts/colmap_dense_clusters.py --matcher diffusion --runner docker --dataset ETs --scene cluster_0002`
-  - Using a Hugging Face mirror: `python scripts/colmap_dense_clusters.py --matcher diffusion --diffusion-hf-endpoint https://hf-mirror.com ...`
-- Or build a DB for a single images folder:
-  - `python scripts/diffusion_to_colmap.py --images-dir outputs/ETs_cluster_0002/images --db-path outputs/ETs_cluster_0002/colmap_diffusion.db --overwrite`
-  - Using a Hugging Face mirror: `python scripts/diffusion_to_colmap.py --hf-endpoint https://hf-mirror.com ...`
-  - If it looks “stuck”, it’s usually downloading the diffusion model the first time; you should now see `[diffusion] ...` progress logs.
-
-## Cutting-edge demo: DINOv2 matching into COLMAP
-Use DINOv2 patch descriptors as a dense matching grid to propose correspondences and feed them into COLMAP:
-- `python scripts/colmap_dense_clusters.py --matcher dino --runner docker`
-
-## Training (recommended): fine-tune retrieval embeddings for better clustering
-IMC25 provides `data/train_labels.csv` (scene labels + poses). A high-ROI way to use training is to fine-tune a retrieval embedding model so images from the same scene group together more cleanly.
-
-1) Train a retrieval embedder (Supervised Contrastive on scene labels):
-- `HF_ENDPOINT=https://hf-mirror.com python scripts/train_retrieval.py --model-id facebook/dinov2-small --output-dir outputs/retrieval_finetune`
-
-2) Build an embeddings cache for the split you want to cluster (`data/test` by default):
-- `HF_ENDPOINT=https://hf-mirror.com python scripts/build_retrieval_cache.py --data-root data/test --cache-root cache_retrieval --checkpoint outputs/retrieval_finetune/best.pt --topk 30 --mutual`
-
-3) Cluster per dataset using the embedding kNN graph:
-- `python scripts/cluster_retrieval.py --cache-root cache_retrieval --out-csv cache/clusters_retrieval.csv`
-
-4) Feed the clusters into SfM/MVS (dense pointcloud per cluster):
-- `python scripts/colmap_dense_clusters.py --clusters-csv cache/clusters_retrieval.csv --data-root data/test --runner docker`
+See `notebooks/README.md` for a suggested order and what each notebook covers.
