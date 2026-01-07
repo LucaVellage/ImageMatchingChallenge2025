@@ -55,3 +55,12 @@ A small dashboard to inspect the retrieval graph (neighbors, clusters, outliers)
 ## Notebooks
 
 See `notebooks/README.md` for a suggested order and what each notebook covers.
+
+## Example 3D Reconstruction (ETs)
+
+These are sample reconstructions from the ETs dataset, showing the recovered camera geometry and a dense point cloud.
+
+<p align="center">
+  <img src="imgs/ET1.png" width="49%" alt="ETs reconstruction example 1" />
+  <img src="imgs/ET2.png" width="49%" alt="ETs reconstruction example 2" />
+</p>
