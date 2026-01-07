@@ -1,4 +1,4 @@
-# Image Matching Challenge 2025 (IMC25)
+# Robust Scene Clustering and 3D Reconstruction from Messy Image Collections
 
 This started as a practical pipeline for the Kaggle Image Matching Challenge 2025, but it goes beyond the
 competition baseline. In addition to producing a valid IMC-style `submission.csv`, the repo includes:
